@@ -12,4 +12,5 @@ type SoC struct {
 	AssistReload    string `json:"assist_reload"`
 	AssistHit       string `json:"assist_hit"`
 	AssistDefBreak  string `json:"assist_def_break"`
+	Locked          string `json:"is_locked"`
 }

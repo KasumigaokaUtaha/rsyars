@@ -5,63 +5,109 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/elazarl/goproxy"
 	"github.com/pkg/errors"
+	yaml "gopkg.in/yaml.v2"
 
-	"github.com/buzzers/rsyars/pkg/logger"
+	log_std "github.com/buzzers/rsyars/pkg/log"
+	"github.com/buzzers/rsyars/pkg/util"
 	"github.com/buzzers/rsyars/rsyars.adapter/hycdes"
 	"github.com/buzzers/rsyars/rsyars.x/soc"
 )
 
-var (
-	ch = make(chan []byte, 128)
-)
+func main() {
+	log, err := log_std.New(fmt.Sprintf("rsyars.%d.log", time.Now().Unix()))
+	if err != nil {
+		panic(fmt.Sprintf("%+v", err))
+	}
 
-func init() {
+	conf := confT{
+		Verbose: false,
+		Rule:    []string{"20"},
+	}
+	body, err := ioutil.ReadFile("rsyars.yaml")
+	if err != nil {
+		log.Errorf("读取配置文件失败并使用默认配置 -> %+v", err)
+	} else {
+		value := new(confT)
+		if err := yaml.Unmarshal(body, value); err != nil {
+			log.Errorf("解析配置文件失败并使用默认配置 -> %+v", err)
+		}
+		conf = *value
+	}
+	for _, rule := range conf.Rule {
+		if rule[0] != '0' && rule[0] != '1' && rule[0] != '2' ||
+			rule[1] != '0' && rule[1] != '1' && rule[1] != '2' {
+			log.Fatalf("规则格式错误 -> %s", rule)
+		}
+	}
 
+	rsyars := &rsyars{
+		log:  log,
+		ch:   make(chan response, 128),
+		conf: conf,
+	}
+	if err := rsyars.Run(); err != nil {
+		rsyars.log.Fatalf("程序启动失败 -> %+v", err)
+	}
 }
 
-func main() {
-	go loop()
+type confT struct {
+	Verbose bool     `yaml:"verbose"`
+	Rule    []string `yaml:"rule"`
+}
 
-	w, err := logger.NewWriter(fmt.Sprintf("rsyars.%d.log", time.Now().Unix()))
+type response struct {
+	Host string
+	Path string
+	Body []byte
+}
+
+type rsyars struct {
+	log  log_std.Logger
+	ch   chan response
+	conf confT
+}
+
+func (rs *rsyars) Run() error {
+	go rs.loop()
+
+	localhost, err := rs.getLocalhost()
 	if err != nil {
-		log.Fatalf("创建日志记录器失败 -> %+v\n", err)
-	}
-	log.SetOutput(w)
-
-	local, err := getLocalhost()
-	if err != nil {
-		log.Fatalf("获取代理地址失败 -> %+v\n", err)
+		rs.log.Fatalf("获取代理地址失败 -> %+v", err)
 	}
 
-	log.Printf("代理地址 -> %s:8080\n", local)
+	rs.log.Tipsf("代理地址 -> %s:8080", localhost)
 
 	srv := goproxy.NewProxyHttpServer()
-	srv.OnResponse(condition()).DoFunc(onResponse)
-	srv.Logger = new(logger.NilLogger)
+	srv.Logger = new(util.NilLogger)
+	srv.OnResponse(rs.condition()).DoFunc(rs.onResponse)
 
 	if err := http.ListenAndServe(":8080", srv); err != nil {
-		log.Fatalf("启动代理服务器失败 -> %+v\n", err)
+		rs.log.Fatalf("启动代理服务器失败 -> %+v", err)
 	}
+
+	return nil
 }
 
-func build(body []byte) {
+func (rs *rsyars) build(body response) {
 	type Girls struct {
 		SoC map[string]*soc.SoC `json:"chip_with_user_info"`
 	}
 
-	_ = ioutil.WriteFile(fmt.Sprintf("response.%d.json", time.Now().Unix()), body, 0)
+	if rs.conf.Verbose {
+		_ = ioutil.WriteFile(fmt.Sprintf("response.%d.json", time.Now().Unix()), body.Body, 0)
+	}
 
 	girls := Girls{}
-	if err := json.Unmarshal(body, &girls); err != nil {
-		log.Printf("解析JSON数据失败 -> %+v\n", err)
+	if err := json.Unmarshal(body.Body, &girls); err != nil {
+		rs.log.Errorf("解析JSON数据失败 -> %+v", err)
 		return
 	}
 
@@ -72,10 +118,13 @@ func build(body []byte) {
 
 	var targets []*hycdes.SoC
 	for _, value := range values {
+		if !rs.pass(value) {
+			continue
+		}
 		target, err := hycdes.NewSoC(value)
 		if err != nil {
 			if !strings.Contains(err.Error(), "unknown") {
-				log.Printf("解析芯片数据失败 -> %+v\n", err)
+				rs.log.Errorf("解析芯片数据失败 -> %+v", err)
 				return
 			} else {
 				continue
@@ -90,46 +139,57 @@ func build(body []byte) {
 
 	c, err := hycdes.Build(targets)
 	if err != nil {
-		log.Printf("生成芯片代码失败 -> %+v\n", err)
+		rs.log.Errorf("生成芯片代码失败 -> %+v", err)
 		return
 	}
 
-	log.Printf("芯片代码 -> %s\n", c)
-}
-
-func loop() {
-	for body := range ch {
-		c := time.Now().Unix()
-		log.Printf("处理响应数据 -> %d\n", c)
-		if body == nil {
-			log.Printf("响应数据为空 程序退出 -> %d\n", c)
-			break
+	rs.log.Tipsf("芯片代码 -> %s", c)
+	if !clipboard.Unsupported {
+		if err := clipboard.WriteAll(c); err != nil {
+			rs.log.Errorf("复制芯片代码到剪贴板失败 -> %+v", err)
+		} else {
+			rs.log.Tipsf("芯片代码已复制到剪贴板")
 		}
-		go build(body)
 	}
 }
 
-func onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-	log.Printf("处理请求响应 -> %s%s\n", ctx.Req.Host, ctx.Req.URL.Path)
+func (rs *rsyars) loop() {
+	for body := range rs.ch {
+		c := time.Now().Unix()
+		rs.log.Infof("处理响应数据 -> %d", c)
+		if body.Body == nil {
+			rs.log.Infof("响应数据为空 程序退出 -> %d", c)
+			break
+		}
+		go rs.build(body)
+	}
+}
+
+func (rs *rsyars) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	rs.log.Infof("处理请求响应 -> %s", path(ctx.Req))
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("读取响应数据失败 -> %+v\n", err)
+		rs.log.Errorf("读取响应数据失败 -> %+v", err)
 		return resp
 	}
 	resp.Body = ioutil.NopCloser(bytes.NewBuffer(body))
 
-	ch <- body
+	rs.ch <- response{
+		Host: ctx.Req.Host,
+		Path: ctx.Req.URL.Path,
+		Body: body,
+	}
 
 	return resp
 }
 
-func condition() goproxy.ReqConditionFunc {
+func (rs *rsyars) condition() goproxy.ReqConditionFunc {
 	return func(req *http.Request, ctx *goproxy.ProxyCtx) bool {
-		log.Printf("请求 -> %s%s\n", req.Host, req.URL.Path)
+		rs.log.Infof("请求 -> %s", path(req))
 		if strings.HasSuffix(req.Host, "ppgame.com") {
 			if strings.HasSuffix(req.URL.Path, "/Index/index") {
-				log.Printf("请求通过 -> %s%s\n", req.Host, req.URL.Path)
+				rs.log.Infof("请求通过 -> %s", path(req))
 				return true
 			}
 		}
@@ -137,7 +197,7 @@ func condition() goproxy.ReqConditionFunc {
 	}
 }
 
-func getLocalhost() (string, error) {
+func (rs *rsyars) getLocalhost() (string, error) {
 	conn, err := net.Dial("tcp", "www.baidu.com:80")
 	if err != nil {
 		return "", errors.WithMessage(err, "连接 www.baidu.com:80 失败")
@@ -147,4 +207,46 @@ func getLocalhost() (string, error) {
 		return "", errors.WithMessage(err, "解析本地主机地址失败")
 	}
 	return host, nil
+}
+
+func (rs *rsyars) pass(value *soc.SoC) bool {
+	for _, rule := range rs.conf.Rule {
+		switch rule[0] {
+		case '0':
+			switch rule[1] {
+			case '0':
+				return true
+			case '1':
+				return value.SquadWithUserID != "0"
+			case '2':
+				return value.SquadWithUserID == "0"
+			}
+		case '1':
+			switch rule[1] {
+			case '0':
+				return value.Locked != "0"
+			case '1':
+				return value.Locked != "0" && value.SquadWithUserID != "0"
+			case '2':
+				return value.Locked != "0" && value.SquadWithUserID == "0"
+			}
+		case '2':
+			switch rule[1] {
+			case '0':
+				return value.Locked == "0"
+			case '1':
+				return value.Locked == "0" && value.SquadWithUserID != "0"
+			case '2':
+				return value.Locked == "0" && value.SquadWithUserID == "0"
+			}
+		}
+	}
+	return false
+}
+
+func path(req *http.Request) string {
+	if req.URL.Path == "/" {
+		return req.Host
+	}
+	return req.Host + req.URL.Path
 }

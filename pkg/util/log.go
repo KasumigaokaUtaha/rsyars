@@ -1,4 +1,4 @@
-package logger
+package util
 
 type NilLogger struct{}
 
