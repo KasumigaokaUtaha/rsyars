@@ -29,7 +29,7 @@ func main() {
 
 	conf := confT{
 		Verbose: false,
-		Rule:    []string{"20"},
+		Rule:    []string{"02"},
 	}
 	body, err := ioutil.ReadFile("rsyars.yaml")
 	if err != nil {
