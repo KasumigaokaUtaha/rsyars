@@ -3,6 +3,7 @@ package hycdes
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 
 	"github.com/pkg/errors"
 
@@ -14,6 +15,7 @@ var (
 )
 
 type SoC struct {
+	ID      int
 	Color   string
 	Class   string
 	Type    string
@@ -27,6 +29,10 @@ type SoC struct {
 func NewSoC(c *soc.SoC) (*SoC, error) {
 	ic := new(SoC)
 
+	id, err := strconv.Atoi(c.ID)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 	color, err := soc.GetColor(c)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -51,6 +57,8 @@ func NewSoC(c *soc.SoC) (*SoC, error) {
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+
+	ic.ID = id
 
 	switch color {
 	case soc.ColorTypeBlue:

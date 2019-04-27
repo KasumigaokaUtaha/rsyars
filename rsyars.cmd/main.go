@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ func main() {
 
 type confT struct {
 	Verbose bool     `yaml:"verbose"`
+	Listen  int      `yaml:"listen"`
 	Rule    []string `yaml:"rule"`
 }
 
@@ -83,13 +85,13 @@ func (rs *rsyars) Run() error {
 		rs.log.Fatalf("获取代理地址失败 -> %+v", err)
 	}
 
-	rs.log.Tipsf("代理地址 -> %s:8080", localhost)
+	rs.log.Tipsf("代理地址 -> %s:%d", localhost, rs.conf.Listen)
 
 	srv := goproxy.NewProxyHttpServer()
 	srv.Logger = new(util.NilLogger)
 	srv.OnResponse(rs.condition()).DoFunc(rs.onResponse)
 
-	if err := http.ListenAndServe(":8080", srv); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", rs.conf.Listen), srv); err != nil {
 		rs.log.Fatalf("启动代理服务器失败 -> %+v", err)
 	}
 
@@ -136,6 +138,10 @@ func (rs *rsyars) build(body response) {
 	if len(targets) == 0 {
 		return
 	}
+
+	sort.SliceStable(targets, func(i, j int) bool {
+		return targets[i].ID < targets[j].ID
+	})
 
 	c, err := hycdes.Build(targets)
 	if err != nil {
