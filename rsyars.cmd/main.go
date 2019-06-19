@@ -89,6 +89,7 @@ func (rs *rsyars) Run() error {
 
 	srv := goproxy.NewProxyHttpServer()
 	srv.Logger = new(util.NilLogger)
+	srv.OnRequest().HandleConnect(goproxy.AlwaysMitm)
 	srv.OnResponse(rs.condition()).DoFunc(rs.onResponse)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", rs.conf.Listen), srv); err != nil {
@@ -193,7 +194,7 @@ func (rs *rsyars) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.R
 func (rs *rsyars) condition() goproxy.ReqConditionFunc {
 	return func(req *http.Request, ctx *goproxy.ProxyCtx) bool {
 		rs.log.Infof("请求 -> %s", path(req))
-		if strings.HasSuffix(req.Host, "ppgame.com") {
+		if strings.HasSuffix(req.Host, "ppgame.com") || strings.HasSuffix(req.Host, "sn-game.txwy.tw") {
 			if strings.HasSuffix(req.URL.Path, "/Index/index") {
 				rs.log.Infof("请求通过 -> %s", path(req))
 				return true
