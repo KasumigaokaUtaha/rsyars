@@ -20,6 +20,7 @@ import (
 	"github.com/buzzers/rsyars/pkg/util"
 	"github.com/buzzers/rsyars/rsyars.adapter/hycdes"
 	"github.com/buzzers/rsyars/rsyars.x/soc"
+	"github.com/buzzers/rsyars/rsyars.x/cipher"
 )
 
 func main() {
@@ -27,7 +28,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("%+v", err))
 	}
-
+	
 	conf := confT{
 		Verbose: false,
 		Rule:    []string{"02"},
@@ -53,6 +54,7 @@ func main() {
 		log:  log,
 		ch:   make(chan response, 128),
 		conf: conf,
+		key : "",
 	}
 	if err := rsyars.Run(); err != nil {
 		rsyars.log.Fatalf("程序启动失败 -> %+v", err)
@@ -75,6 +77,7 @@ type rsyars struct {
 	log  log_std.Logger
 	ch   chan response
 	conf confT
+	key string
 }
 
 func (rs *rsyars) Run() error {
@@ -103,15 +106,46 @@ func (rs *rsyars) build(body response) {
 	type Girls struct {
 		SoC map[string]*soc.SoC `json:"chip_with_user_info"`
 	}
+	type Uid struct {
+		Sign            string `json:"sign"`
+	}
 
 	if rs.conf.Verbose {
 		_ = ioutil.WriteFile(fmt.Sprintf("response.%d.json", time.Now().Unix()), body.Body, 0)
 	}
-
 	girls := Girls{}
-	if err := json.Unmarshal(body.Body, &girls); err != nil {
-		rs.log.Errorf("解析JSON数据失败 -> %+v", err)
-		return
+	// starts with "#"
+	if body.Body[0] == byte(35){
+		if strings.HasSuffix(body.Path,"/Index/getDigitalSkyNbUid"){
+			data, err := cipher.AuthCodeDecodeB64(string(body.Body)[1:], "yundoudou", true)
+			if err != nil {
+				rs.log.Errorf("解析Uid数据失败 -> %+v", err)
+				return
+			}
+			uid := Uid{}
+			if err := json.Unmarshal([]byte(data), &uid); err != nil {
+				rs.log.Errorf("解析JSON数据失败 -> %+v", err)
+				return
+			}
+			rs.key = uid.Sign
+			return
+		} else if strings.HasSuffix(body.Path,"/Index/index"){
+			data, err := cipher.AuthCodeDecodeB64(string(body.Body)[1:], rs.key, true)
+			if err != nil {
+				rs.log.Errorf("解析用户数据失败 -> %+v", err)
+				return
+			}
+			
+			if err := json.Unmarshal([]byte(data), &girls); err != nil {
+				rs.log.Errorf("解析JSON数据失败 -> %+v", err)
+				return
+			}
+		}
+	} else if strings.HasSuffix(body.Path,"/Index/index"){
+		if err := json.Unmarshal(body.Body, &girls); err != nil {
+			rs.log.Errorf("解析JSON数据失败 -> %+v", err)
+			return
+		}
 	}
 
 	var values []*soc.SoC
@@ -195,7 +229,7 @@ func (rs *rsyars) condition() goproxy.ReqConditionFunc {
 	return func(req *http.Request, ctx *goproxy.ProxyCtx) bool {
 		rs.log.Infof("请求 -> %s", path(req))
 		if strings.HasSuffix(req.Host, "ppgame.com") || strings.HasSuffix(req.Host, "sn-game.txwy.tw") {
-			if strings.HasSuffix(req.URL.Path, "/Index/index") {
+			if strings.HasSuffix(req.URL.Path, "/Index/index") || strings.HasSuffix(req.URL.Path, "/Index/getDigitalSkyNbUid"){
 				rs.log.Infof("请求通过 -> %s", path(req))
 				return true
 			}
