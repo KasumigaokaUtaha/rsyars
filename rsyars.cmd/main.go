@@ -32,6 +32,7 @@ func main() {
 	conf := confT{
 		Verbose: false,
 		Rule:    []string{"02"},
+		Listen: 8888,
 	}
 	body, err := ioutil.ReadFile("rsyars.yaml")
 	if err != nil {
@@ -92,7 +93,7 @@ func (rs *rsyars) Run() error {
 
 	srv := goproxy.NewProxyHttpServer()
 	srv.Logger = new(util.NilLogger)
-	srv.OnRequest().HandleConnect(goproxy.AlwaysMitm)
+	//srv.OnRequest().HandleConnect(goproxy.AlwaysMitm)
 	srv.OnResponse(rs.condition()).DoFunc(rs.onResponse)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", rs.conf.Listen), srv); err != nil {
