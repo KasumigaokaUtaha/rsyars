@@ -42,8 +42,9 @@ func main() {
 		value := new(confT)
 		if err := yaml.Unmarshal(body, value); err != nil {
 			log.Errorf("解析配置文件失败并使用默认配置 -> %+v", err)
+		} else {
+			conf = *value
 		}
-		conf = *value
 	}
 	for _, rule := range conf.Rule {
 		if rule[0] != '0' && rule[0] != '1' && rule[0] != '2' ||
